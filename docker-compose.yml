@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./backend/indexes:/app/indexes
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        - VITE_API_URL=http://localhost:3000
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:3000
+    depends_on:
+      - backend
