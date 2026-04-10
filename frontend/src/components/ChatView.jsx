@@ -58,14 +58,17 @@ export default function ChatView({ document, onDelete }) {
       const { answer, sources: srcs } = res.data
       setSources(srcs || [])
       
-      const formatted = answer
-        .replace(/([a-z])([A-Z])/g, '$1 $2')
-        .replace(/([a-zA-Z])(\d)/g, '$1 $2')
-        .replace(/(\d)([a-zA-Z])/g, '$1 $2')
-        .replace(/\.([A-Z])/g, '. $1')
-        .replace(/!([A-Z])/g, '! $1')
-        .replace(/\?([A-Z])/g, '? $1')
-        .replace(/([.,!?])([A-Za-z])/g, '$1 $2')
+      let formatted = answer || 'No response received.'
+      if (typeof formatted === 'string') {
+        formatted = formatted
+          .replace(/([a-z])([A-Z])/g, '$1 $2')
+          .replace(/([a-zA-Z])(\d)/g, '$1 $2')
+          .replace(/(\d)([a-zA-Z])/g, '$1 $2')
+          .replace(/\.([A-Z])/g, '. $1')
+          .replace(/!([A-Z])/g, '! $1')
+          .replace(/\?([A-Z])/g, '? $1')
+          .replace(/([.,!?])([A-Za-z])/g, '$1 $2')
+      }
 
       setMessages(prev => [...prev, { 
         role: 'assistant', 
