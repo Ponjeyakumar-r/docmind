@@ -466,10 +466,14 @@ async def chat_stream(req: ChatRequest):
 def delete_doc(doc_id: str):
     if doc_id not in docs_store:
         raise HTTPException(404, "Document not found.")
-    docs_store.pop(doc_id)
-    conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
-    conn.commit()
-    save_faiss_index()
-    for f in UPLOAD_DIR.glob(f"{doc_id}.*"):
-        f.unlink(missing_ok=True)
-    return {"deleted": doc_id}
+    try:
+        docs_store.pop(doc_id)
+        conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+        conn.commit()
+        save_faiss_index()
+        for f in UPLOAD_DIR.glob(f"{doc_id}.*"):
+            f.unlink(missing_ok=True)
+        return {"deleted": doc_id}
+    except Exception as e:
+        log.error(f"Delete error: {e}")
+        raise HTTPException(500, str(e))
