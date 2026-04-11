@@ -50,24 +50,47 @@ export default function ChatView({ document, onDelete }) {
     setSources([])
 
     try {
-      const res = await axios.post(`${API}/chat`, {
-        doc_id: document.doc_id,
-        question: q
-      })
-
-      const { answer, sources: srcs } = res.data
-      setSources(srcs || [])
+      setMessages(prev => [...prev, { role: 'assistant', text: '', streaming: true, ts: Date.now() }])
       
-      let formatted = answer || 'No response received.'
-      if (typeof formatted === 'string') {
-        formatted = formatted
-          .replace(/([a-z])([A-Z])/g, '$1 $2')
-          .replace(/([a-zA-Z])(\d)/g, '$1 $2')
-          .replace(/(\d)([a-zA-Z])/g, '$1 $2')
-          .replace(/\.([A-Z])/g, '. $1')
-          .replace(/!([A-Z])/g, '! $1')
-          .replace(/\?([A-Z])/g, '? $1')
-          .replace(/([.,!?])([A-Za-z])/g, '$1 $2')
+      const response = await fetch(`${API}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc_id: document.doc_id, question: q })
+      })
+      
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let answer = ''
+      let buffer = ''
+      
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6)
+            if (data === '[DONE]') break
+            if (data.startsWith('Error:')) {
+              answer = data
+            } else {
+              answer += data
+            }
+          }
+        }
+      }
+      
+      setMessages(prev => {
+        const newMsgs = [...prev]
+        const lastIdx = newMsgs.length - 1
+        if (lastIdx >= 0 && newMsgs[lastIdx].streaming) {
+          newMsgs[lastIdx] = { role: 'assistant', text: answer, ts: Date.now() }
+        }
+        return newMsgs
+      })
       }
 
       setMessages(prev => [...prev, { 
@@ -78,7 +101,7 @@ export default function ChatView({ document, onDelete }) {
     } catch (e) {
       setMessages(prev => [...prev, {
         role: 'assistant',
-        text: `Error: ${e.response?.data?.detail || e.message || 'Could not reach the server.'}`,
+        text: `Error: ${e.message || 'Could not reach the server.'}`,
         isError: true,
         ts: Date.now(),
       }])
