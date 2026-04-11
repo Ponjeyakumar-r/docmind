@@ -1,7 +1,8 @@
 {
-  "name": "ai-knowledge-assistant",
+  "name": "docmind",
   "private": true,
   "version": "1.0.0",
+  "description": "AI-powered document knowledge assistant - upload PDFs, ask questions, get AI answers with RAG",
   "type": "module",
   "scripts": {
     "dev": "vite",
