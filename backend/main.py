@@ -78,6 +78,39 @@ def classify_document(text: str) -> tuple[str, float]:
 # ── In-memory Store ────────────────────────────────────────────────────────────────
 docs_store: dict = {}
 
+def load_doc_to_store(doc_id: str, filename: str) -> Optional[dict]:
+    for ext in ["pdf", "txt", "md"]:
+        file_path = UPLOAD_DIR / f"{doc_id}.{ext}"
+        if file_path.exists():
+            try:
+                text = extract_text(file_path, ext)
+                chunks = chunk_text(text)
+                return {
+                    "filename": filename,
+                    "chunks": chunks,
+                    "category": "unknown",
+                    "confidence": 0.5,
+                    "word_count": len(text.split()),
+                }
+            except Exception as e:
+                log.error(f"Failed to load {filename}: {e}")
+                return None
+    return None
+
+def get_doc_from_store(doc_id: str) -> Optional[dict]:
+    if doc_id in docs_store:
+        return docs_store[doc_id]
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.execute("SELECT filename FROM documents WHERE doc_id = ?", (doc_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        doc = load_doc_to_store(doc_id, row[0])
+        if doc:
+            docs_store[doc_id] = doc
+            return doc
+    return None
+
 def extract_text(path: Path, ext: str) -> str:
     if ext == "pdf":
         try:
@@ -224,7 +257,7 @@ def search_documents(q: str, limit: int = 10):
                 continue
             seen_docs.add(doc_id)
             
-            entry = docs_store.get(doc_id)
+            entry = get_doc_from_store(doc_id)
             if not entry:
                 continue
             
@@ -232,7 +265,7 @@ def search_documents(q: str, limit: int = 10):
                 "doc_id": doc_id,
                 "filename": entry["filename"],
                 "category": entry["category"],
-                "categoryIcon": CATEGORY_ICON.get(entry["category"], "📄"),
+                "categoryIcon": CATEGORY_ICON.get(entry.get("category", "notes"), "📄"),
                 "file_type": entry["filename"].rsplit(".", 1)[-1].lower(),
                 "excerpt": chunk[:200] + "..." if len(chunk) > 200 else chunk,
                 "score": 1.0
@@ -307,7 +340,7 @@ def chat(req: ChatRequest):
     filenames = []
     
     for doc_id in doc_ids:
-        entry = docs_store.get(doc_id)
+        entry = get_doc_from_store(doc_id)
         if entry:
             all_chunks.extend(entry["chunks"])
             filenames.append(entry["filename"])
@@ -330,7 +363,7 @@ async def chat_stream(req: ChatRequest):
     filenames = []
     
     for doc_id in doc_ids:
-        entry = docs_store.get(doc_id)
+        entry = get_doc_from_store(doc_id)
         if entry:
             all_chunks.extend(entry["chunks"])
             filenames.append(entry["filename"])
