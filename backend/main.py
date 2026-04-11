@@ -20,7 +20,7 @@ from pydantic import BaseModel
 import asyncio
 from sentence_transformers import SentenceTransformer
 import openai
-import fitz          # PyMuPDF
+import fitz
 import markdown
 import nltk
 try:
