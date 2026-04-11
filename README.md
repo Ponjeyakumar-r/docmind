@@ -161,5 +161,3 @@ Free tier available with limited credits.
 - ✅ LLM integration (OpenRouter)
 - ✅ PDF/text processing pipeline
 - ✅ Full-stack integration (Vercel + Render)
-
-**Registration:** 22MIS1035
