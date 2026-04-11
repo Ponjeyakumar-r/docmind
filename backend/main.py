@@ -42,6 +42,15 @@ TOP_K        = 4
 
 CATEGORIES   = ["resume", "legal", "technical", "research", "financial", "notes"]
 
+CATEGORY_ICON = {
+    "resume": "📋",
+    "legal": "⚖️",
+    "technical": "🔧",
+    "research": "🔬",
+    "financial": "💰",
+    "notes": "📝",
+}
+
 # ── Database Setup ─────────────────────────────────────────────────────────
 def init_db():
     conn = sqlite3.connect(str(DB_PATH))
@@ -63,30 +72,46 @@ conn = init_db()
 
 # ── Load/Save FAISS Index ───────────────────────────────────────────────────
 def save_faiss_index():
-    if docs_store:
-        all_chunks = []
-        for doc in docs_store.values():
-            all_chunks.extend(doc["chunks"])
-        if all_chunks:
-            embeddings = embedder.encode(all_chunks, show_progress_bar=False, convert_to_numpy=True).astype("float32")
-            global_index = faiss.IndexFlatL2(EMB_DIM)
-            global_index.add(embeddings)
-            faiss.write_index(global_index, str(INDEX_PATH))
-            log.info(f"Saved FAISS index with {len(all_chunks)} chunks")
+    if not docs_store:
+        return
+    all_chunks = []
+    for doc in docs_store.values():
+        all_chunks.extend(doc["chunks"])
+    if not all_chunks:
+        return
+    try:
+        embeddings = get_embedder().encode(all_chunks, show_progress_bar=False, convert_to_numpy=True).astype("float32")
+        global_index = faiss.IndexFlatL2(EMB_DIM)
+        global_index.add(embeddings)
+        faiss.write_index(global_index, str(INDEX_PATH))
+        log.info(f"Saved FAISS index with {len(all_chunks)} chunks")
+    except Exception as e:
+        log.error(f"Failed to save FAISS index: {e}")
 
 def load_faiss_index() -> Optional[faiss.Index]:
     if INDEX_PATH.exists():
         return faiss.read_index(str(INDEX_PATH))
     return None
 
-# ── Models ─────────────────────────────────────────────────────────────────
-log.info("Loading sentence-transformer …")
-embedder = SentenceTransformer("all-MiniLM-L6-v2", device='cpu')
-EMB_DIM  = 384
+# ── Models (lazy-loaded) ────────────────────────────────────────────────
+embedder = None
+cross_encoder = None
+EMB_DIM = 384
 
-log.info("Loading cross-encoder for re-ranking …")
-from sentence_transformers import CrossEncoder
-cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device='cpu')
+def get_embedder():
+    global embedder
+    if embedder is None:
+        log.info("Loading sentence-transformer …")
+        embedder = SentenceTransformer("all-MiniLM-L6-v2", device='cpu')
+    return embedder
+
+def get_cross_encoder():
+    global cross_encoder
+    if cross_encoder is None:
+        log.info("Loading cross-encoder for re-ranking …")
+        from sentence_transformers import CrossEncoder
+        cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device='cpu')
+    return cross_encoder
 
 # ── PyTorch document classifier ─────────────────────────────────────────────
 class DocClassifier(nn.Module):
@@ -105,11 +130,16 @@ class DocClassifier(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-log.info("Initialising document classifier …")
-classifier = DocClassifier()
-# Pre-train with synthetic rule-based labels so the model works out-of-the-box
-# (In production you'd fine-tune on a labelled dataset)
-classifier.eval()
+# Classifier loaded on-demand only
+classifier = None
+
+def get_classifier():
+    global classifier
+    if classifier is None:
+        log.info("Initialising document classifier …")
+        classifier = DocClassifier()
+        classifier.eval()
+    return classifier
 
 KEYWORD_MAP = {
     "resume":    ["experience", "skills", "education", "work", "employment", "cv", "resume", "linkedin", "experience", "qualification", "objective"],
@@ -148,7 +178,7 @@ def load_documents_from_db():
                 try:
                     text = extract_text(file_path, ext)
                     chunks = chunk_text(text)
-                    index, _ = build_faiss_index(chunks)
+                    index, _ = build_faiss_index(chunks, lazy=True)
                     docs_store[doc_id] = {
                         "filename": filename,
                         "chunks": chunks,
@@ -187,16 +217,18 @@ def chunk_text(text: str, size=CHUNK_SIZE, overlap=CHUNK_OVERLAP) -> List[str]:
         i += size - overlap
     return chunks
 
-def build_faiss_index(chunks: List[str]):
-    embeddings = embedder.encode(chunks, show_progress_bar=False, convert_to_numpy=True)
+def build_faiss_index(chunks: List[str], lazy=False):
+    if lazy:
+        return None, None
+    embeddings = get_embedder().encode(chunks, show_progress_bar=False, convert_to_numpy=True)
     index = faiss.IndexFlatL2(EMB_DIM)
     index.add(embeddings.astype("float32"))
     return index, embeddings
 
-load_documents_from_db()
-
+# Document store loaded lazily via /documents endpoint
 def retrieve(question: str, chunks: List[str], index, k=TOP_K) -> List[str]:
-    q_emb = embedder.encode([question], convert_to_numpy=True).astype("float32")
+    model = get_embedder()
+    q_emb = model.encode([question], convert_to_numpy=True).astype("float32")
     _, ids = index.search(q_emb, min(k, len(chunks)))
     return [chunks[i] for i in ids[0] if i < len(chunks)]
 
@@ -204,12 +236,14 @@ def retrieve_with_rerank(question: str, chunks: List[str], index, k=TOP_K, reran
     if len(chunks) <= k:
         return retrieve(question, chunks, index, k)
     
-    q_emb = embedder.encode([question], convert_to_numpy=True).astype("float32")
+    model = get_embedder()
+    ce = get_cross_encoder()
+    q_emb = model.encode([question], convert_to_numpy=True).astype("float32")
     _, ids = index.search(q_emb, min(rerank_top, len(chunks)))
     candidate_chunks = [chunks[i] for i in ids[0] if i < len(chunks)]
     
     pairs = [[question, chunk] for chunk in candidate_chunks]
-    scores = cross_encoder.predict(pairs)
+    scores = ce.predict(pairs)
     ranked_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
     return [candidate_chunks[i] for i in ranked_indices]
 
@@ -313,10 +347,27 @@ def list_documents():
 def search_documents(q: str, limit: int = 10):
     if not q or len(q.strip()) < 2:
         return {"results": []}
+    if not docs_store:
+        return {"results": []}
     
     try:
-        query_embed = embed([q])[0]
-        D, I = faiss_index.search(np.array([query_embed]), min(limit * 3, faiss_index.ntotal))
+        all_chunks = []
+        doc_id_for_chunk = []
+        for doc_id, entry in docs_store.items():
+            for chunk in entry["chunks"]:
+                all_chunks.append(chunk)
+                doc_id_for_chunk.append(doc_id)
+        
+        if not all_chunks:
+            return {"results": []}
+        
+        model = get_embedder()
+        query_embed = model.encode([q], convert_to_numpy=True).astype("float32")
+        temp_index = faiss.IndexFlatL2(EMB_DIM)
+        temp_index.add(query_embed)
+        
+        search_k = min(limit * 3, len(all_chunks))
+        D, I = temp_index.search(query_embed.reshape(1, -1), search_k)
         
         results = []
         seen_docs = set()
@@ -324,7 +375,7 @@ def search_documents(q: str, limit: int = 10):
             if idx < 0 or idx >= len(all_chunks):
                 continue
             chunk = all_chunks[idx]
-            doc_id = chunk_doc_map.get(idx)
+            doc_id = doc_id_for_chunk[idx]
             if not doc_id or doc_id in seen_docs:
                 continue
             
@@ -372,14 +423,12 @@ async def upload(file: UploadFile = File(...)):
         raise HTTPException(400, "Document appears to be empty or unreadable.")
 
     chunks  = chunk_text(text)
-    index, _= build_faiss_index(chunks)
     cat, conf = classify_document(text)
     wc      = len(text.split())
 
     docs_store[doc_id] = {
         "filename":    file.filename,
         "chunks":      chunks,
-        "index":       index,
         "category":    cat,
         "confidence":  conf,
         "word_count":  wc,
@@ -427,6 +476,8 @@ def chat(req: ChatRequest):
         raise HTTPException(404, "No documents found. Please re-upload.")
     
     combined_index, _ = build_faiss_index(all_chunks)
+    if combined_index is None:
+        combined_index = faiss.IndexFlatL2(EMB_DIM)
     sources = retrieve_with_rerank(req.question, all_chunks, combined_index)
     context = "\n\n---\n\n".join(sources)
     answer = ask_llm(context, req.question)
@@ -452,6 +503,8 @@ async def chat_stream(req: ChatRequest):
         raise HTTPException(404, "No documents found. Please re-upload.")
     
     combined_index, _ = build_faiss_index(all_chunks)
+    if combined_index is None:
+        combined_index = faiss.IndexFlatL2(EMB_DIM)
     sources = retrieve_with_rerank(req.question, all_chunks, combined_index)
     context = "\n\n---\n\n".join(sources)
     
